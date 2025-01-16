@@ -1,6 +1,5 @@
-class InteractionAttention(nn.Module):
-      r"""InterHand Temporal Fusion and Interaction Attention
-    """
+class InterHand_temporal_fusion(nn.Module):
+      
     def __init__(self, channels, num_heads=4, dropout=0.1):
         super(InteractionAttention, self).__init__()
         self.num_heads = num_heads
