@@ -1,7 +1,7 @@
-class InterHand_temporal_fusion(nn.Module):
+class InterHandTemporalFusion(nn.Module):
       
     def __init__(self, channels, num_heads=4, dropout=0.1):
-        super(InteractionAttention, self).__init__()
+        super(InterHandTemporalFusion, self).__init__()
         self.num_heads = num_heads
         self.channels_per_head = channels // num_heads
         self.qkv_left = nn.Conv2d(channels, 3 * channels, kernel_size=1)
