@@ -5,5 +5,6 @@ Robust Hand-washing Activity Recognition.
 The paper is accepted to PerCom2025.
 
 ## Acknowledgements
-This repo is mainly based on ST-GCN. 
+This repo is mainly based on [ST-GCN](https://github.com/yysijie/st-gcn).
+
 Thanks to the original authors for their excellent work!
