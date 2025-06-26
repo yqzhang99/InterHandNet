@@ -20,6 +20,7 @@ If you find this work helpful, please cite:
   keywords  = {Hands; Runtime; Activity recognition; Cameras; Skeleton; Robustness; Real-time systems; Wearable devices; Usability; Software development management; Hand-washing activity recognition; hand skeleton; RGB-D camera},
   doi       = {10.1109/PerCom64205.2025.00021}
 }
+```
 
 ## Acknowledgements
 This repo is mainly based on [ST-GCN](https://github.com/yysijie/st-gcn).
