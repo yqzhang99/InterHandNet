@@ -14,8 +14,6 @@ If you find this work helpful, please cite:
   title     = {InterHandNet: Capturing Two-hand Interaction for Robust Hand-washing Activity Recognition},
   booktitle = {2025 IEEE International Conference on Pervasive Computing and Communications (PerCom)},
   year      = {2025},
-  volume    = {},
-  number    = {},
   pages     = {13--24},
   keywords  = {Hands; Runtime; Activity recognition; Cameras; Skeleton; Robustness; Real-time systems; Wearable devices; Usability; Software development management; Hand-washing activity recognition; hand skeleton; RGB-D camera},
   doi       = {10.1109/PerCom64205.2025.00021}
