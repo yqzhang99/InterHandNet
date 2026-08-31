@@ -4,6 +4,8 @@ Robust Hand-washing Activity Recognition.
 
 The paper is accepted to PerCom2025.
 
+The PDF is available in this repository: [paper/Percom2025Hand.pdf](paper/Percom2025Hand.pdf).
+
 ## Citation
 
 If you find this work helpful, please cite:
