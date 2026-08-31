@@ -25,8 +25,7 @@ from typing import Optional, Sequence
 import torch
 from torch import nn
 
-from ..graph import NUM_JOINTS, HandGraph, InteractionGraph
-from ..modules import pairwise_distance_matrix
+from .base import TwoHandBackbone, initialize_weights
 from .stgc_block import STGCBlock
 
 DEFAULT_BLOCK_CHANNELS = (32, 32, 32, 64, 64, 64)
@@ -34,11 +33,14 @@ DEFAULT_BLOCK_STRIDES = (1, 1, 1, 2, 1, 1)
 DEFAULT_INTERACTION_GRAPH_BLOCKS = (0, 1, 2)
 
 
-class InterHandNet(nn.Module):
+class InterHandNet(TwoHandBackbone):
     """InterHandNet with an ST-GCN backbone.
 
     Args:
-        num_classes: Number of hand-washing steps (six WHO steps by default).
+        num_classes: Number of output classes. The default of 7 matches the label
+            set of the Lulla et al. dataset used in the paper: class 0 is "other
+            movement" and classes 1..6 are the six WHO steps. Set it to 6 to
+            classify the WHO steps alone.
         in_channels: Input channels. The first three must be the 3D joint
             coordinates, because the distance matrix ``D`` is computed from them.
         block_channels: Output channels of each STGC block.
@@ -58,6 +60,9 @@ class InterHandNet(nn.Module):
             normalisation. The paper defines cross-hand edges only.
         distance_fusion: ``"matmul"`` or ``"hadamard"``, see
             :class:`~interhandnet.modules.interaction_graph.SpatialInteractionGraphConv`.
+        attention_scope: Scope of Interaction Attention, see
+            :class:`~interhandnet.modules.interaction_attention.InteractionAttention`.
+        residual: Add a block-level residual connection to every STGC block.
 
     Shape:
         - Input: ``(N, C_in, T, V)`` with ``V = 42`` joints, left hand first.
@@ -66,13 +71,13 @@ class InterHandNet(nn.Module):
 
     def __init__(
         self,
-        num_classes: int = 6,
+        num_classes: int = 7,
         in_channels: int = 3,
         block_channels: Sequence[int] = DEFAULT_BLOCK_CHANNELS,
         block_strides: Sequence[int] = DEFAULT_BLOCK_STRIDES,
         interaction_graph_blocks: Sequence[int] = DEFAULT_INTERACTION_GRAPH_BLOCKS,
-        max_hop: int = 1,
-        temporal_kernel_sizes: Sequence[int] = (9, 5),
+        max_hop: int = 2,
+        temporal_kernel_sizes: Sequence[int] = (5, 15),
         num_heads: int = 4,
         dropout: float = 0.5,
         attention_dropout: float = 0.1,
@@ -81,35 +86,23 @@ class InterHandNet(nn.Module):
         use_interaction_attention: bool = True,
         interaction_graph_self_loops: bool = False,
         distance_fusion: str = "matmul",
+        attention_scope: str = "spatial",
+        residual: bool = True,
     ) -> None:
-        super().__init__()
         if len(block_channels) != len(block_strides):
             raise ValueError(
                 "block_channels and block_strides must have the same length, got "
                 f"{len(block_channels)} and {len(block_strides)}"
             )
-        if in_channels < 3:
-            raise ValueError(f"in_channels must be at least 3 (x, y, z), got {in_channels}")
+        interaction_blocks = set(interaction_graph_blocks) if use_interaction_graph else set()
+        super().__init__(
+            in_channels=in_channels,
+            max_hop=max_hop,
+            interaction_graph_self_loops=interaction_graph_self_loops,
+            requires_distance=bool(interaction_blocks),
+        )
 
         self.num_classes = num_classes
-        self.in_channels = in_channels
-        self.num_nodes = NUM_JOINTS
-
-        hand_graph = HandGraph(max_hop=max_hop)
-        interaction_graph = InteractionGraph(self_loops=interaction_graph_self_loops)
-        self.register_buffer(
-            "adjacency", torch.tensor(hand_graph.A, dtype=torch.float32), persistent=False
-        )
-        self.register_buffer(
-            "interaction_adjacency",
-            torch.tensor(interaction_graph.A, dtype=torch.float32),
-            persistent=False,
-        )
-
-        interaction_blocks = set(interaction_graph_blocks) if use_interaction_graph else set()
-        self.requires_distance = bool(interaction_blocks)
-
-        self.input_bn = nn.BatchNorm1d(in_channels * self.num_nodes)
 
         blocks = []
         current_channels = in_channels
@@ -118,7 +111,7 @@ class InterHandNet(nn.Module):
                 STGCBlock(
                     in_channels=current_channels,
                     out_channels=out_channels,
-                    num_subsets=self.adjacency.size(0),
+                    num_subsets=self.num_subsets,
                     num_nodes=self.num_nodes,
                     stride=stride,
                     temporal_kernel_sizes=temporal_kernel_sizes,
@@ -129,47 +122,20 @@ class InterHandNet(nn.Module):
                     use_interhand_temporal_fusion=use_interhand_temporal_fusion,
                     use_interaction_attention=use_interaction_attention,
                     distance_fusion=distance_fusion,
+                    attention_scope=attention_scope,
+                    residual=residual,
                 )
             )
             current_channels = out_channels
         self.blocks = nn.ModuleList(blocks)
 
         self.classifier = nn.Linear(current_channels, num_classes)
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for module in self.modules():
-            if isinstance(module, nn.Conv2d):
-                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d)):
-                nn.init.ones_(module.weight)
-                nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, std=0.01)
-                nn.init.zeros_(module.bias)
-
-    def _normalize_input(self, x: torch.Tensor) -> torch.Tensor:
-        """Batch-normalise per joint and channel, as in ST-GCN."""
-        n, c, t, v = x.shape
-        x = x.permute(0, 3, 1, 2).contiguous().view(n, v * c, t)
-        x = self.input_bn(x)
-        return x.view(n, v, c, t).permute(0, 2, 3, 1).contiguous()
+        initialize_weights(self)
 
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
         """Run the STGC blocks and return the ``(N, C_L)`` pooled feature."""
-        if x.dim() != 4:
-            raise ValueError(f"expected a 4D input (N, C, T, V), got shape {tuple(x.shape)}")
-        if x.size(3) != self.num_nodes:
-            raise ValueError(f"expected {self.num_nodes} joints, got {x.size(3)}")
-
-        distance: Optional[torch.Tensor] = None
-        if self.requires_distance:
-            # D is built from the raw coordinates, before input normalisation, so
-            # that it carries metric distances between the two hands.
-            distance = pairwise_distance_matrix(x[:, :3])
-
+        self._check_input(x)
+        distance: Optional[torch.Tensor] = self._distance_matrix(x)
         x = self._normalize_input(x)
         for block in self.blocks:
             x = block(x, self.adjacency, self.interaction_adjacency, distance)

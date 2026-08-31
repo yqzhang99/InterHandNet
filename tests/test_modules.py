@@ -159,15 +159,17 @@ class TestInterHandTemporalFusion:
 
 
 class TestInteractionAttention:
-    def test_output_shape(self):
-        attention = InteractionAttention(CHANNELS, num_heads=4).eval()
+    @pytest.mark.parametrize("scope", ["spatial", "spatiotemporal"])
+    def test_output_shape(self, scope):
+        attention = InteractionAttention(CHANNELS, num_heads=4, scope=scope).eval()
         x = random_features()
         assert attention(x).shape == x.shape
 
-    def test_each_half_is_driven_by_the_other_hand(self):
+    @pytest.mark.parametrize("scope", ["spatial", "spatiotemporal"])
+    def test_each_half_is_driven_by_the_other_hand(self, scope):
         """Eq. (6) and Eq. (7): the value tensor comes from the opposite hand, so
         perturbing one hand must change the other hand's output."""
-        attention = InteractionAttention(CHANNELS, num_heads=2).eval()
+        attention = InteractionAttention(CHANNELS, num_heads=2, scope=scope).eval()
         x = random_features()
         perturbed = x.clone()
         perturbed[:, :, :, NUM_JOINTS_PER_HAND:] += 3.0
@@ -178,3 +180,37 @@ class TestInteractionAttention:
         left_before = before[:, :, :, :NUM_JOINTS_PER_HAND]
         left_after = after[:, :, :, :NUM_JOINTS_PER_HAND]
         assert not torch.allclose(left_before, left_after)
+
+    def test_rejects_unknown_scope(self):
+        with pytest.raises(ValueError, match="scope"):
+            InteractionAttention(CHANNELS, scope="temporal")
+
+    def test_spatial_scope_does_not_mix_time_steps(self):
+        """With `spatial` scope each frame is attended independently, so changing
+        one frame must leave the other frames untouched. This is the property that
+        distinguishes the two scopes."""
+        attention = InteractionAttention(CHANNELS, num_heads=2, scope="spatial").eval()
+        x = random_features()
+        perturbed = x.clone()
+        perturbed[:, :, 1, :] += 4.0
+
+        with torch.no_grad():
+            before = attention(x)
+            after = attention(perturbed)
+
+        untouched = [frame for frame in range(x.size(2)) if frame != 1]
+        assert torch.allclose(before[:, :, untouched], after[:, :, untouched], atol=1e-6)
+        assert not torch.allclose(before[:, :, 1], after[:, :, 1])
+
+    def test_spatiotemporal_scope_mixes_time_steps(self):
+        attention = InteractionAttention(
+            CHANNELS, num_heads=2, scope="spatiotemporal"
+        ).eval()
+        x = random_features()
+        perturbed = x.clone()
+        perturbed[:, :, 1, :] += 4.0
+
+        with torch.no_grad():
+            before = attention(x)
+            after = attention(perturbed)
+        assert not torch.allclose(before[:, :, 0], after[:, :, 0])

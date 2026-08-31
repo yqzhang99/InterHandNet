@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from interhandnet.graph import NUM_JOINTS, HandGraph, InteractionGraph
-from interhandnet.models import InterHandNet, STGCBlock, build_model
+from interhandnet.models import STAGCN, InterHandNet, STGCBlock, build_model
 from interhandnet.modules import pairwise_distance_matrix
 
 BATCH, FRAMES, NUM_CLASSES = 2, 12, 6
@@ -13,6 +13,17 @@ SMALL_MODEL = {
     "block_channels": (8, 16),
     "block_strides": (1, 2),
     "interaction_graph_blocks": (0,),
+    "temporal_kernel_sizes": (3,),
+    "num_heads": 2,
+}
+SMALL_STA_GCN = {
+    "num_classes": NUM_CLASSES,
+    "feature_channels": (8, 8),
+    "feature_strides": (1, 1),
+    "branch_channels": (16, 16),
+    "branch_strides": (2, 1),
+    "interaction_graph_blocks": (1,),
+    "num_attention_edges": 2,
     "temporal_kernel_sizes": (3,),
     "num_heads": 2,
 }
@@ -55,6 +66,70 @@ class TestSTGCBlock:
         assert len(block.edge_importance) == 2
         assert all(mask.shape == (2, NUM_JOINTS, NUM_JOINTS) for mask in block.edge_importance)
         assert all(mask.requires_grad for mask in block.edge_importance)
+
+    @pytest.mark.parametrize("stride", [1, 2])
+    def test_residual_projects_when_shape_changes(self, stride):
+        adjacency = torch.tensor(HandGraph(max_hop=1).A, dtype=torch.float32)
+        block = STGCBlock(
+            8,
+            16,
+            num_subsets=adjacency.size(0),
+            stride=stride,
+            temporal_kernel_sizes=(3,),
+            num_heads=2,
+            use_interaction_graph=False,
+            residual=True,
+        ).eval()
+        out = block(torch.randn(BATCH, 8, FRAMES, NUM_JOINTS), adjacency)
+        assert out.shape == (BATCH, 16, (FRAMES + stride - 1) // stride, NUM_JOINTS)
+
+    def test_residual_can_be_disabled(self):
+        kwargs = dict(
+            in_channels=8,
+            out_channels=8,
+            num_subsets=2,
+            temporal_kernel_sizes=(3,),
+            num_heads=2,
+            use_interaction_graph=False,
+        )
+        assert STGCBlock(residual=True, **kwargs).residual is not None
+        assert STGCBlock(residual=False, **kwargs).residual is None
+
+    def test_attention_edges_add_a_data_dependent_subset(self):
+        """STA-GCN feeds per-sample adjacency matrices; they must reach the graph
+        product, so changing them must change the output."""
+        adjacency = torch.tensor(HandGraph(max_hop=1).A, dtype=torch.float32)
+        block = STGCBlock(
+            8,
+            16,
+            num_subsets=adjacency.size(0),
+            temporal_kernel_sizes=(3,),
+            num_heads=2,
+            use_interaction_graph=False,
+            num_attention_edges=2,
+        ).eval()
+        x = torch.randn(BATCH, 8, FRAMES, NUM_JOINTS)
+        edges = torch.rand(BATCH, 2, NUM_JOINTS, NUM_JOINTS)
+
+        with torch.no_grad():
+            first = block(x, adjacency, attention_edges=edges)
+            second = block(x, adjacency, attention_edges=edges * 0.5)
+        assert first.shape == (BATCH, 16, FRAMES, NUM_JOINTS)
+        assert not torch.allclose(first, second)
+
+    def test_missing_attention_edges_is_an_error(self):
+        adjacency = torch.tensor(HandGraph(max_hop=1).A, dtype=torch.float32)
+        block = STGCBlock(
+            8,
+            16,
+            num_subsets=adjacency.size(0),
+            temporal_kernel_sizes=(3,),
+            num_heads=2,
+            use_interaction_graph=False,
+            num_attention_edges=1,
+        )
+        with pytest.raises(ValueError, match="attention_edges"):
+            block(torch.randn(BATCH, 8, FRAMES, NUM_JOINTS), adjacency)
 
 
 class TestInterHandNet:
@@ -152,14 +227,88 @@ class TestInterHandNet:
             assert torch.allclose(model(x), model(x))
 
 
+class TestSTAGCN:
+    def test_forward_shape(self):
+        model = STAGCN(**SMALL_STA_GCN).eval()
+        with torch.no_grad():
+            logits = model(skeleton_batch())
+        assert logits.shape == (BATCH, NUM_CLASSES)
+
+    def test_auxiliary_head_returns_both_branches(self):
+        model = STAGCN(**SMALL_STA_GCN).eval()
+        with torch.no_grad():
+            prediction, auxiliary = model.forward_with_auxiliary(skeleton_batch())
+        assert prediction.shape == auxiliary.shape == (BATCH, NUM_CLASSES)
+
+    def test_forward_returns_the_perception_branch(self):
+        model = STAGCN(**SMALL_STA_GCN).eval()
+        x = skeleton_batch()
+        with torch.no_grad():
+            assert torch.allclose(model(x), model.forward_with_auxiliary(x)[0])
+
+    def test_attention_gate_and_edges_have_the_expected_shapes(self):
+        model = STAGCN(**SMALL_STA_GCN).eval()
+        with torch.no_grad():
+            feature = model.extract_features(skeleton_batch())
+            _, gate, edges = model._attention_branch(feature)
+        # The gate is resampled back to the feature resolution so it can scale it.
+        assert gate.shape == (BATCH, 1, feature.size(2), NUM_JOINTS)
+        assert edges.shape == (BATCH, SMALL_STA_GCN["num_attention_edges"], NUM_JOINTS, NUM_JOINTS)
+        # relu(tanh(.)) is a gate in [0, 1).
+        assert (edges >= 0).all() and (edges < 1).all()
+        assert (gate > 0).all() and (gate < 1).all()
+
+    def test_gradients_reach_both_branches(self):
+        model = STAGCN(**SMALL_STA_GCN)
+        prediction, auxiliary = model.forward_with_auxiliary(skeleton_batch())
+        (prediction.sum() + auxiliary.sum()).backward()
+
+        for name in ("attention_blocks", "perception_blocks", "feature_blocks"):
+            grads = [
+                parameter.grad
+                for parameter in getattr(model, name).parameters()
+                if parameter.grad is not None
+            ]
+            assert grads, f"no gradient reached {name}"
+            assert any(float(grad.abs().sum()) > 0 for grad in grads)
+
+    def test_ablation_switches_change_the_parameter_count(self):
+        full = STAGCN(**SMALL_STA_GCN)
+        baseline = STAGCN(
+            **SMALL_STA_GCN,
+            use_interaction_graph=False,
+            use_interaction_attention=False,
+            use_interhand_temporal_fusion=False,
+        )
+        assert sum(p.numel() for p in baseline.parameters()) < sum(
+            p.numel() for p in full.parameters()
+        )
+
+    def test_requires_at_least_one_attention_edge(self):
+        with pytest.raises(ValueError, match="attention edge"):
+            STAGCN(**{**SMALL_STA_GCN, "num_attention_edges": 0})
+
+
 class TestBuilder:
     def test_build_from_config(self):
         model = build_model({"name": "interhandnet", **SMALL_MODEL})
         assert isinstance(model, InterHandNet)
 
+    def test_build_sta_gcn_from_config(self):
+        model = build_model({"name": "interhandnet_sta_gcn", **SMALL_STA_GCN})
+        assert isinstance(model, STAGCN)
+
     def test_unknown_model_name(self):
         with pytest.raises(KeyError, match="unknown model"):
             build_model({"name": "does-not-exist"})
+
+    def test_key_of_the_other_backbone_is_rejected(self):
+        """`block_channels` describes the ST-GCN backbone only. Passing it to the
+        STA-GCN backbone means the config inherited from the wrong parent."""
+        with pytest.raises(KeyError, match="block_channels"):
+            build_model(
+                {"name": "interhandnet_sta_gcn", **SMALL_STA_GCN, "block_channels": [8, 8]}
+            )
 
 
 class TestOnnxExport:

@@ -9,10 +9,12 @@ import torch
 
 from interhandnet.graph import NUM_JOINTS, NUM_JOINTS_PER_HAND
 from interhandnet.modules.reshape import (
+    from_spatial_tokens,
     from_spatiotemporal_tokens,
     from_temporal_tokens,
     merge_hands,
     split_hands,
+    to_spatial_tokens,
     to_spatiotemporal_tokens,
     to_temporal_tokens,
 )
@@ -40,6 +42,25 @@ def test_temporal_tokens_preserve_channel_head_split():
     head, dim, joint, frame = 2, 1, 7, 3
     assert torch.equal(
         tokens[0, head, joint, frame, dim],
+        x[0, head * (CHANNELS // HEADS) + dim, frame, joint],
+    )
+
+
+def test_spatial_token_round_trip():
+    x = torch.randn(BATCH, CHANNELS, FRAMES, NUM_JOINTS_PER_HAND)
+    tokens = to_spatial_tokens(x, HEADS)
+    assert tokens.shape == (BATCH, HEADS, FRAMES, NUM_JOINTS_PER_HAND, CHANNELS // HEADS)
+    assert torch.allclose(from_spatial_tokens(tokens), x)
+
+
+def test_spatial_tokens_keep_the_frame_axis_separate():
+    """The frame axis stays a batch dimension, which is what makes the resulting
+    attention matrix per-frame rather than spatio-temporal."""
+    x = torch.randn(BATCH, CHANNELS, FRAMES, NUM_JOINTS_PER_HAND)
+    tokens = to_spatial_tokens(x, HEADS)
+    head, dim, joint, frame = 3, 1, 5, 2
+    assert torch.equal(
+        tokens[0, head, frame, joint, dim],
         x[0, head * (CHANNELS // HEADS) + dim, frame, joint],
     )
 

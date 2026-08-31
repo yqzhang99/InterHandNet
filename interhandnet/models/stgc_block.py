@@ -15,6 +15,10 @@ Following the reference implementation, the temporal stage has several parallel
 branches with different kernel sizes. The branches share the spatial
 convolution weights but own their edge-importance masks, and their outputs are
 summed.
+
+A block-level residual connection is added on top, which the paper does not draw
+in Fig. 2 but which every ST-GCN derivative uses. It can be switched off to
+reproduce the original research code exactly.
 """
 
 from __future__ import annotations
@@ -78,6 +82,11 @@ class STGCBlock(nn.Module):
         use_interaction_attention: Enable Eq. (6) and Eq. (7).
         distance_fusion: How ``A_IG`` and ``D`` are combined, see
             :class:`~interhandnet.modules.interaction_graph.SpatialInteractionGraphConv`.
+        attention_scope: Scope of Interaction Attention, see
+            :class:`~interhandnet.modules.interaction_attention.InteractionAttention`.
+        residual: Add a block-level residual connection.
+        num_attention_edges: Number of per-sample adjacency subsets, used by the
+            STA-GCN backbone's perception branch.
     """
 
     def __init__(
@@ -87,7 +96,7 @@ class STGCBlock(nn.Module):
         num_subsets: int,
         num_nodes: int = NUM_JOINTS,
         stride: int = 1,
-        temporal_kernel_sizes: Sequence[int] = (9, 5),
+        temporal_kernel_sizes: Sequence[int] = (5, 15),
         num_heads: int = 4,
         dropout: float = 0.5,
         attention_dropout: float = 0.1,
@@ -95,6 +104,9 @@ class STGCBlock(nn.Module):
         use_interhand_temporal_fusion: bool = True,
         use_interaction_attention: bool = True,
         distance_fusion: str = "matmul",
+        attention_scope: str = "spatial",
+        residual: bool = True,
+        num_attention_edges: int = 0,
     ) -> None:
         super().__init__()
         if not temporal_kernel_sizes:
@@ -102,13 +114,20 @@ class STGCBlock(nn.Module):
 
         self.stride = stride
         self.use_interaction_graph = use_interaction_graph
+        self.num_attention_edges = num_attention_edges
 
         if use_interaction_graph:
             self.spatial_conv: SpatialGraphConv = SpatialInteractionGraphConv(
-                in_channels, out_channels, num_subsets, distance_fusion=distance_fusion
+                in_channels,
+                out_channels,
+                num_subsets,
+                num_attention_edges=num_attention_edges,
+                distance_fusion=distance_fusion,
             )
         else:
-            self.spatial_conv = SpatialGraphConv(in_channels, out_channels, num_subsets)
+            self.spatial_conv = SpatialGraphConv(
+                in_channels, out_channels, num_subsets, num_attention_edges=num_attention_edges
+            )
 
         num_branches = len(temporal_kernel_sizes)
         # ST-GCN style edge importance weighting: `A + M` of Eq. (1) is realised
@@ -136,12 +155,22 @@ class STGCBlock(nn.Module):
             else None
         )
         self.interaction_attention = (
-            InteractionAttention(out_channels, num_heads=num_heads)
+            InteractionAttention(out_channels, num_heads=num_heads, scope=attention_scope)
             if use_interaction_attention
             else None
         )
         self.temporal_feature_extractor = FeatureExtractor(out_channels, attention_dropout)
         self.attention_feature_extractor = FeatureExtractor(out_channels, attention_dropout)
+
+        if not residual:
+            self.residual: Optional[nn.Module] = None
+        elif in_channels == out_channels and stride == 1:
+            self.residual = nn.Identity()
+        else:
+            self.residual = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=(stride, 1)),
+                nn.BatchNorm2d(out_channels),
+            )
 
     def forward(
         self,
@@ -149,12 +178,14 @@ class STGCBlock(nn.Module):
         adjacency: torch.Tensor,
         interaction_adjacency: Optional[torch.Tensor] = None,
         distance: Optional[torch.Tensor] = None,
+        attention_edges: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Args:
             x: ``(N, C_in, T, V)`` node features.
             adjacency: ``(K, V, V)`` physical adjacency ``A``.
             interaction_adjacency: ``(V, V)`` cross-hand adjacency ``A_IG``.
             distance: ``(N, T, V, V)`` distance matrix ``D``.
+            attention_edges: ``(N, A, V, V)`` per-sample adjacency matrices.
         """
         if self.use_interaction_graph and (interaction_adjacency is None or distance is None):
             raise ValueError(
@@ -170,9 +201,10 @@ class STGCBlock(nn.Module):
                     weighted_adjacency,
                     interaction_adjacency * self.interaction_edge_importance[index],
                     distance,
+                    attention_edges,
                 )
             else:
-                spatial = self.spatial_conv(x, weighted_adjacency)
+                spatial = self.spatial_conv(x, weighted_adjacency, attention_edges)
 
             if self.temporal_fusion is not None:
                 spatial = self.temporal_fusion(spatial)
@@ -185,4 +217,8 @@ class STGCBlock(nn.Module):
 
         if self.interaction_attention is not None:
             temporal = temporal + self.interaction_attention(temporal)
-        return self.attention_feature_extractor(temporal)
+        out = self.attention_feature_extractor(temporal)
+
+        if self.residual is not None:
+            out = out + self.residual(x)
+        return out

@@ -1,11 +1,18 @@
 # Full InterHandNet: Interaction Graph + Interaction Attention + InterHand
 # Temporal Fusion on the ST-GCN backbone. This is the `+IG/IA/ITF` row of
-# Table III.
+# Table III, and it also defines the ST-GCN block layout that the baseline and
+# the ablations inherit.
 _base_: base.yaml
 
 work_dir: work_dirs/interhandnet
 
 model:
+  name: interhandnet
+  block_channels: [32, 32, 32, 64, 64, 64]
+  block_strides: [1, 1, 1, 2, 1, 1]
+  # The Interaction Graph is applied to the blocks that run at full temporal
+  # resolution, so the distance matrix D stays aligned with the features.
+  interaction_graph_blocks: [0, 1, 2]
   use_interaction_graph: true
   use_interaction_attention: true
   use_interhand_temporal_fusion: true

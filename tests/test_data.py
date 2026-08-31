@@ -3,7 +3,14 @@
 import numpy as np
 import pytest
 
-from interhandnet.data import HandWashingSkeletonDataset, resample_sequence, temporal_kfold
+from interhandnet.data import (
+    CLASS_NAMES,
+    WHO_STEP_NAMES,
+    HandWashingSkeletonDataset,
+    class_names,
+    resample_sequence,
+    temporal_kfold,
+)
 from interhandnet.data.skeleton_extraction import sliding_windows
 from interhandnet.data.splits import camera_wise_folds, group_indices_by_camera, weighted_average
 from interhandnet.data.transforms import center_hands, missing_joint_mask, to_model_layout
@@ -27,6 +34,25 @@ def archive(tmp_path):
         start_frames=np.arange(NUM_SAMPLES) * 30,
     )
     return path
+
+
+class TestClassNames:
+    def test_seven_classes_start_with_the_other_class(self):
+        """The dataset's own label set: 0 = other, 1..6 = WHO steps."""
+        names = class_names(7)
+        assert names == CLASS_NAMES
+        assert names[0].startswith("0:")
+        assert names[1:] == WHO_STEP_NAMES
+
+    def test_six_classes_are_the_who_steps_alone(self):
+        assert class_names(6) == WHO_STEP_NAMES
+
+    def test_unknown_label_set_falls_back_to_indices(self):
+        assert class_names(3) == ("class 0", "class 1", "class 2")
+
+    def test_a_name_exists_for_every_class(self):
+        for num_classes in (3, 6, 7):
+            assert len(class_names(num_classes)) == num_classes
 
 
 class TestResample:

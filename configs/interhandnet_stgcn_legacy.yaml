@@ -1,0 +1,24 @@
+# Reproduces the choices of the original research code as closely as possible,
+# for A/B comparison against the paper-aligned defaults. Differences from
+# `interhandnet.yaml`:
+#
+#   * no InterHand Temporal Fusion -- the module was written after the
+#     experiments in the original notebooks were run, so that code has no
+#     equivalent of Eq. (4);
+#   * no block-level residual, which the original STGC block omits;
+#   * self-loops in A_IG, an artefact of building it with the same hop-partition
+#     helper as the physical graph;
+#   * the Interaction Graph on blocks 1 and 2 only.
+#
+# See docs/implementation_notes.md for the full comparison.
+_base_: interhandnet.yaml
+
+work_dir: work_dirs/interhandnet_stgcn_legacy
+
+model:
+  use_interaction_graph: true
+  use_interaction_attention: true
+  use_interhand_temporal_fusion: false
+  interaction_graph_blocks: [1, 2]
+  interaction_graph_self_loops: true
+  residual: false

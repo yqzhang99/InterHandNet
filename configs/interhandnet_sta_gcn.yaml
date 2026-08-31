@@ -1,0 +1,29 @@
+# InterHandNet with the STA-GCN backbone: the `STA-GCN + IG/IA/ITF` row of
+# Table III and the best-scoring row of Table II (accuracy 0.8170, F1 0.7951).
+_base_: base.yaml
+
+work_dir: work_dirs/interhandnet_sta_gcn
+
+data:
+  # The paper uses a batch size between 32 and 128 depending on the backbone
+  # complexity; the two-branch backbone is the heavier one.
+  batch_size: 32
+
+model:
+  name: interhandnet_sta_gcn
+  # STA-GCN's own layout: a three-block feature extractor feeding an attention
+  # branch and a perception branch of three blocks each.
+  feature_channels: [32, 32, 32]
+  feature_strides: [1, 1, 1]
+  branch_channels: [64, 64, 64]
+  branch_strides: [2, 1, 1]
+  # Indices into the feature extractor, the only stage that keeps D aligned.
+  interaction_graph_blocks: [1, 2]
+  num_attention_edges: 2
+  use_interaction_graph: true
+  use_interaction_attention: true
+  use_interhand_temporal_fusion: true
+
+training:
+  # Both branches are supervised: loss = CE(perception) + CE(attention).
+  auxiliary_loss_weight: 1.0

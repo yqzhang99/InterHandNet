@@ -5,13 +5,15 @@ is the batch size, ``C`` the number of channels, ``T`` the temporal window and
 ``V = 42`` the number of joints. Joints ``0..20`` belong to the left hand and
 joints ``21..41`` to the right hand.
 
-The attention modules need two different multi-head views of a single-hand
+The attention modules need three different multi-head views of a single-hand
 feature map ``(N, C, T, J)``:
 
 * per-joint sequences over time -- used by InterHand Temporal Fusion, whose
   attention runs along the temporal window for every joint independently;
-* flattened spatio-temporal tokens -- used by Interaction Attention, which fuses
-  spatio-temporal features of both hands.
+* per-frame joint sets -- used by Interaction Attention in its default
+  ``spatial`` scope, where each frame is attended independently;
+* flattened spatio-temporal tokens -- used by Interaction Attention in its
+  ``spatiotemporal`` scope, where a token is one (time step, joint) pair.
 
 Writing these permutations once keeps the modules readable and avoids the
 silent data scrambling that a bare ``view`` would cause.
@@ -54,6 +56,23 @@ def from_temporal_tokens(x: torch.Tensor) -> torch.Tensor:
     """Inverse of :func:`to_temporal_tokens`."""
     n, heads, j, t, head_dim = x.shape
     return x.permute(0, 1, 4, 3, 2).reshape(n, heads * head_dim, t, j)
+
+
+def to_spatial_tokens(x: torch.Tensor, num_heads: int) -> torch.Tensor:
+    """``(N, C, T, J)`` -> ``(N, heads, T, J, C // heads)``.
+
+    Every frame becomes an independent set of ``J`` tokens, so an attention
+    matrix built from this view is block-diagonal in time.
+    """
+    n, c, t, j = x.shape
+    head_dim = c // num_heads
+    return x.reshape(n, num_heads, head_dim, t, j).permute(0, 1, 3, 4, 2)
+
+
+def from_spatial_tokens(x: torch.Tensor) -> torch.Tensor:
+    """Inverse of :func:`to_spatial_tokens`."""
+    n, heads, t, j, head_dim = x.shape
+    return x.permute(0, 1, 4, 2, 3).reshape(n, heads * head_dim, t, j)
 
 
 def to_spatiotemporal_tokens(x: torch.Tensor, num_heads: int) -> torch.Tensor:

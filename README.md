@@ -66,12 +66,14 @@ for ONNX export, `".[dev]"` for the test suite.
 import torch
 from interhandnet import InterHandNet
 
-model = InterHandNet(num_classes=6)
+# 7 classes: 0 is "other movement", 1..6 are the WHO steps, matching the label
+# set of the dataset used in the paper.
+model = InterHandNet(num_classes=7)
 
 # One second of two-hand skeleton data at 30 fps:
 # 3 coordinates, 30 frames, 42 joints (left hand 0..20, right hand 21..41).
 skeleton = torch.randn(1, 3, 30, 42)
-logits = model(skeleton)  # (1, 6)
+logits = model(skeleton)  # (1, 7)
 ```
 
 Every module can be switched off individually, which reproduces the ablation
@@ -79,11 +81,22 @@ rows of Table III and Table IV:
 
 ```python
 baseline = InterHandNet(
-    num_classes=6,
     use_interaction_graph=False,
     use_interaction_attention=False,
     use_interhand_temporal_fusion=False,
 )  # plain ST-GCN backbone
+```
+
+The STA-GCN backbone, which scores best in Table II, is available as a second
+model. It supervises two heads, so training sums their losses while `forward`
+still returns the single tensor used for prediction:
+
+```python
+from interhandnet.models import STAGCN
+
+model = STAGCN(num_classes=7)
+logits = model(skeleton)                                   # (1, 7)
+prediction, auxiliary = model.forward_with_auxiliary(skeleton)
 ```
 
 ## Training
@@ -127,17 +140,26 @@ python tools/train.py --config configs/interhandnet.yaml \
 
 ## Configurations
 
-| Config | Modules enabled | Paper row |
-| --- | --- | --- |
-| `configs/stgcn_baseline.yaml` | none | ST-GCN baseline |
-| `configs/ablation_ig.yaml` | IG | `+IG` |
-| `configs/ablation_ia.yaml` | IA | `+IA` |
-| `configs/ablation_ig_ia.yaml` | IG + IA | `+IG/IA` |
-| `configs/interhandnet.yaml` | IG + IA + ITF | `+IG/IA/ITF` |
+| Config | Backbone | Modules enabled | Paper row |
+| --- | --- | --- | --- |
+| `configs/stgcn_baseline.yaml` | ST-GCN | none | `ST-GCN [18]` |
+| `configs/ablation_ig.yaml` | ST-GCN | IG | `+IG` |
+| `configs/ablation_ia.yaml` | ST-GCN | IA | `+IA` |
+| `configs/ablation_ig_ia.yaml` | ST-GCN | IG + IA | `+IG/IA` |
+| `configs/interhandnet.yaml` | ST-GCN | IG + IA + ITF | `+IG/IA/ITF` |
+| `configs/sta_gcn_baseline.yaml` | STA-GCN | none | `STA-GCN [22]` |
+| `configs/interhandnet_sta_gcn.yaml` | STA-GCN | IG + IA + ITF | best row of Table II |
 
-`configs/base.yaml` holds the shared settings, including the hyperparameters of
-Section IV-C: 50 epochs, learning rate 0.01, SGD with momentum 0.9 and weight
-decay 0.0005, cross-entropy loss.
+`configs/interhandnet_stgcn_legacy.yaml` reproduces the choices of the original
+experiment code (no ITF, no block residual, self-loops in `A_IG`) for A/B
+comparison against the defaults.
+
+`configs/base.yaml` holds the settings that are shared by both backbones,
+including the hyperparameters of Section IV-C: 50 epochs, learning rate 0.01, SGD
+with momentum 0.9 and weight decay 0.0005, cross-entropy loss. The block layout
+is backbone-specific, so it lives in `interhandnet.yaml` and
+`interhandnet_sta_gcn.yaml`; every other config inherits from one of those two
+and only flips the module switches.
 
 ## Edge deployment
 
@@ -197,7 +219,7 @@ block after a strided temporal convolution needs a resampled `D`.
 interhandnet/
 ├── graph/          A (physical hand graph) and A_IG (Interaction Graph), Fig. 3
 ├── modules/        the three proposed modules and the Feature Extractor
-├── models/         STGC block and the InterHandNet model, Fig. 2
+├── models/         STGC block and the ST-GCN / STA-GCN backbones, Fig. 2
 ├── data/           dataset, transforms, skeleton extraction, CV splits
 ├── engine/         trainer, evaluator, metrics
 └── utils/          config, logging, seeding
@@ -212,8 +234,9 @@ paper/              the PerCom 2025 paper
 ## Documentation
 
 * [docs/implementation_notes.md](docs/implementation_notes.md) — equation-to-code
-  map and every decision the paper leaves open, including the two readings of
-  `A_IG D` and the query/key assignment in InterHand Temporal Fusion.
+  map, every decision the paper leaves open (the two readings of `A_IG D`, the
+  scope of Interaction Attention, the query/key assignment in InterHand Temporal
+  Fusion), and a table comparing this code against the original experiment code.
 * [docs/dataset.md](docs/dataset.md) — obtaining the datasets and building the
   skeleton archive.
 

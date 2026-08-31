@@ -1,5 +1,5 @@
 # Ablation `+IA` of Table IV: Interaction Attention only.
-_base_: base.yaml
+_base_: interhandnet.yaml
 
 work_dir: work_dirs/ablation_ia
 

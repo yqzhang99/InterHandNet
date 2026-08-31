@@ -31,10 +31,10 @@ htmlcov/
 .DS_Store
 
 # Experiment artefacts
-work_dirs/
-outputs/
-runs/
-logs/
+/work_dirs/
+/outputs/
+/runs/
+/logs/
 *.log
 
 # Model artefacts
@@ -46,9 +46,11 @@ logs/
 *.plan
 *.trt
 
-# Data (skeleton archives are large; keep them out of git)
-data/
-datasets/
+# Data (skeleton archives are large; keep them out of git).
+# Anchored to the repository root so that the `interhandnet/data` package, which
+# holds the dataset/transform/split source code, stays under version control.
+/data/
+/datasets/
 *.npy
 *.npz
 *.h5

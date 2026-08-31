@@ -36,11 +36,18 @@ class TrainingConfig:
     lr_gamma: float = 0.1
     best_metric: str = "f1"
     log_interval: int = 50
+    # Weight of the auxiliary branch loss for backbones that supervise two heads,
+    # such as STA-GCN. The reference implementation sums the two terms unweighted.
+    auxiliary_loss_weight: float = 1.0
 
     def __post_init__(self) -> None:
         if self.best_metric not in METRIC_NAMES:
             raise ValueError(
                 f"best_metric must be one of {METRIC_NAMES}, got {self.best_metric!r}"
+            )
+        if self.auxiliary_loss_weight < 0:
+            raise ValueError(
+                f"auxiliary_loss_weight must be non-negative, got {self.auxiliary_loss_weight}"
             )
 
 
@@ -85,10 +92,25 @@ class Trainer:
             else None
         )
 
+        # Two-branch backbones (STA-GCN) expose both heads for training while
+        # `forward` keeps returning the single tensor used for prediction.
+        self.uses_auxiliary_head = bool(self.config.auxiliary_loss_weight) and hasattr(
+            self.model, "forward_with_auxiliary"
+        )
+
         self.best_metrics: Optional[ClassificationMetrics] = None
         self.best_epoch = -1
         self.best_state_dict: Optional[Dict[str, torch.Tensor]] = None
         self.history: List[Dict[str, float]] = []
+
+    def compute_loss(self, skeletons: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Cross-entropy on the prediction head, plus the auxiliary head if any."""
+        if not self.uses_auxiliary_head:
+            return self.criterion(self.model(skeletons), labels)
+        main_logits, auxiliary_logits = self.model.forward_with_auxiliary(skeletons)
+        return self.criterion(main_logits, labels) + self.config.auxiliary_loss_weight * (
+            self.criterion(auxiliary_logits, labels)
+        )
 
     def train_epoch(self, loader: DataLoader, epoch: int) -> float:
         self.model.train()
@@ -100,7 +122,7 @@ class Trainer:
             labels = labels.to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad(set_to_none=True)
-            loss = self.criterion(self.model(skeletons), labels)
+            loss = self.compute_loss(skeletons, labels)
             loss.backward()
             if self.config.grad_clip is not None:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)

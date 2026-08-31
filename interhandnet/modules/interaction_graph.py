@@ -18,6 +18,8 @@ mask, so ``A + M`` is implemented as ``A * M`` with ``M`` initialised to ones.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 from torch import nn
 
@@ -42,34 +44,82 @@ def pairwise_distance_matrix(coords: torch.Tensor, eps: float = 1e-12) -> torch.
 
 
 class SpatialGraphConv(nn.Module):
-    """Spatial graph convolution of Eq. (1) with spatial configuration partitioning.
+    """Spatial graph convolution of Eq. (1) with distance partitioning.
+
+    The neighbourhood is split into ``K = max_hop + 1`` subsets by hop distance,
+    each with its own weight matrix.
+
+    Backbones such as STA-GCN additionally feed data-dependent adjacency matrices
+    ("attention edges") that are predicted per sample. Requesting
+    ``num_attention_edges > 0`` adds that many extra subsets, whose graph product
+    uses the per-sample matrices instead of the fixed ``A``.
 
     Args:
         in_channels: Input channels ``C_l``.
         out_channels: Output channels ``C_{l+1}``.
-        num_subsets: Number of adjacency subsets ``K`` (``max_hop + 1``).
+        num_subsets: Number of fixed adjacency subsets ``K`` (``max_hop + 1``).
+        num_attention_edges: Number of per-sample adjacency subsets.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, num_subsets: int) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_subsets: int,
+        num_attention_edges: int = 0,
+    ) -> None:
         super().__init__()
+        if num_attention_edges < 0:
+            raise ValueError(
+                f"num_attention_edges must be non-negative, got {num_attention_edges}"
+            )
         self.num_subsets = num_subsets
+        self.num_attention_edges = num_attention_edges
         self.out_channels = out_channels
-        self.conv = nn.Conv2d(in_channels, out_channels * num_subsets, kernel_size=1)
+        total_subsets = num_subsets + num_attention_edges
+        self.conv = nn.Conv2d(in_channels, out_channels * total_subsets, kernel_size=1)
 
     def _project(self, x: torch.Tensor) -> torch.Tensor:
-        """``(N, C_in, T, V)`` -> ``(N, K, C_out, T, V)``."""
+        """``(N, C_in, T, V)`` -> ``(N, K + A, C_out, T, V)``."""
         x = self.conv(x)
         n, _, t, v = x.shape
-        return x.view(n, self.num_subsets, self.out_channels, t, v)
+        return x.view(n, self.num_subsets + self.num_attention_edges, self.out_channels, t, v)
 
-    def forward(self, x: torch.Tensor, adjacency: torch.Tensor) -> torch.Tensor:
+    def _attention_edge_product(
+        self, projected: torch.Tensor, attention_edges: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        """Graph product over the per-sample adjacency subsets, if any."""
+        if not self.num_attention_edges:
+            return None
+        if attention_edges is None:
+            raise ValueError(
+                "this convolution was built with num_attention_edges="
+                f"{self.num_attention_edges} but no attention_edges were passed"
+            )
+        return torch.einsum(
+            "nkctv,nkvw->nctw", projected[:, self.num_subsets :], attention_edges
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        adjacency: torch.Tensor,
+        attention_edges: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Args:
             x: ``(N, C_in, T, V)`` node features.
             adjacency: ``(K, V, V)`` adjacency tensor, already multiplied by the
                 edge-importance mask.
+            attention_edges: ``(N, A, V, V)`` per-sample adjacency matrices.
         """
         projected = self._project(x)
-        return torch.einsum("nkctv,kvw->nctw", projected, adjacency).contiguous()
+        out = torch.einsum(
+            "nkctv,kvw->nctw", projected[:, : self.num_subsets], adjacency
+        )
+        data_dependent = self._attention_edge_product(projected, attention_edges)
+        if data_dependent is not None:
+            out = out + data_dependent
+        return out.contiguous()
 
 
 class SpatialInteractionGraphConv(SpatialGraphConv):
@@ -96,9 +146,10 @@ class SpatialInteractionGraphConv(SpatialGraphConv):
         in_channels: int,
         out_channels: int,
         num_subsets: int,
+        num_attention_edges: int = 0,
         distance_fusion: DistanceFusion = "matmul",
     ) -> None:
-        super().__init__(in_channels, out_channels, num_subsets)
+        super().__init__(in_channels, out_channels, num_subsets, num_attention_edges)
         if distance_fusion not in _VALID_FUSIONS:
             raise ValueError(
                 f"distance_fusion must be one of {_VALID_FUSIONS}, got {distance_fusion!r}"
@@ -111,6 +162,7 @@ class SpatialInteractionGraphConv(SpatialGraphConv):
         adjacency: torch.Tensor,
         interaction_adjacency: torch.Tensor,
         distance: torch.Tensor,
+        attention_edges: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Args:
             x: ``(N, C_in, T, V)`` node features.
@@ -118,6 +170,7 @@ class SpatialInteractionGraphConv(SpatialGraphConv):
             interaction_adjacency: ``(V, V)`` cross-hand adjacency ``A_IG`` times
                 its edge-importance mask.
             distance: ``(N, T, V, V)`` distance matrix ``D``.
+            attention_edges: ``(N, A, V, V)`` per-sample adjacency matrices.
         """
         if distance.size(1) != x.size(2):
             raise ValueError(
@@ -126,7 +179,12 @@ class SpatialInteractionGraphConv(SpatialGraphConv):
             )
 
         projected = self._project(x)
-        physical = torch.einsum("nkctv,kvw->nctw", projected, adjacency)
+        fixed = projected[:, : self.num_subsets]
+        out = torch.einsum("nkctv,kvw->nctw", fixed, adjacency)
+
+        data_dependent = self._attention_edge_product(projected, attention_edges)
+        if data_dependent is not None:
+            out = out + data_dependent
 
         if self.distance_fusion == "matmul":
             weighted = torch.matmul(interaction_adjacency, distance)
@@ -135,7 +193,7 @@ class SpatialInteractionGraphConv(SpatialGraphConv):
 
         # A_IG does not depend on the adjacency subset, so the subsets can be
         # summed before the graph product instead of once per subset.
-        pooled = projected.sum(dim=1).permute(0, 2, 1, 3)  # (N, T, C_out, V)
+        pooled = fixed.sum(dim=1).permute(0, 2, 1, 3)  # (N, T, C_out, V)
         interaction = torch.matmul(pooled, weighted).permute(0, 2, 1, 3)  # (N, C_out, T, V)
 
-        return (physical + interaction).contiguous()
+        return (out + interaction).contiguous()

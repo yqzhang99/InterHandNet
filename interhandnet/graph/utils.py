@@ -46,7 +46,7 @@ def build_partitioned_adjacency(
 
     The neighbourhood of every node is split into ``max_hop + 1`` subsets, one per
     hop distance. Each subset gets its own weight matrix in the spatial graph
-    convolution, which is the "spatial configuration partitioning" of ST-GCN.
+    convolution, which is the "distance partitioning" of ST-GCN.
     """
     hop_distance = get_hop_distance(num_node, edges, max_hop)
     valid_hops = range(max_hop + 1)

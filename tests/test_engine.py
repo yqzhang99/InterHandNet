@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 import torch
+from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from interhandnet.engine import Trainer, TrainingConfig, compute_metrics, confusion_matrix, evaluate
@@ -26,6 +27,27 @@ def loader():
     skeletons = torch.randn(12, 3, 8, NUM_JOINTS)
     labels = torch.arange(12) % NUM_CLASSES
     return DataLoader(TensorDataset(skeletons, labels), batch_size=4)
+
+
+class DualHeadModel(nn.Module):
+    """Stand-in for a two-branch backbone such as STA-GCN.
+
+    Keeping the trainer test independent of the real STA-GCN makes it clear that
+    the dual supervision hinges on nothing but the presence of
+    ``forward_with_auxiliary``.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.main = nn.Linear(3, NUM_CLASSES)
+        self.auxiliary = nn.Linear(3, NUM_CLASSES)
+
+    def forward_with_auxiliary(self, x):
+        pooled = x.mean(dim=(2, 3))
+        return self.main(pooled), self.auxiliary(pooled)
+
+    def forward(self, x):
+        return self.forward_with_auxiliary(x)[0]
 
 
 class TestConfusionMatrix:
@@ -111,6 +133,10 @@ class TestTrainingConfig:
         with pytest.raises(ValueError, match="best_metric"):
             TrainingConfig(best_metric="auc")
 
+    def test_negative_auxiliary_weight_is_rejected(self):
+        with pytest.raises(ValueError, match="auxiliary_loss_weight"):
+            TrainingConfig(auxiliary_loss_weight=-1.0)
+
 
 class TestTrainer:
     def test_fit_records_history_and_best_checkpoint(self, loader, tmp_path):
@@ -145,6 +171,75 @@ class TestTrainer:
         )
         trainer.fit(loader)
         assert not torch.allclose(before, model.classifier.weight)
+
+    def test_single_head_model_does_not_use_the_auxiliary_path(self):
+        trainer = Trainer(
+            InterHandNet(**SMALL_MODEL),
+            num_classes=NUM_CLASSES,
+            device=torch.device("cpu"),
+            logger=lambda *_: None,
+        )
+        assert not trainer.uses_auxiliary_head
+
+    def test_dual_head_loss_sums_both_branches(self):
+        """STA-GCN supervises both branches, so the loss must contain both terms."""
+        torch.manual_seed(0)
+        model = DualHeadModel()
+        trainer = Trainer(
+            model,
+            num_classes=NUM_CLASSES,
+            config=TrainingConfig(auxiliary_loss_weight=0.5, log_interval=0),
+            device=torch.device("cpu"),
+            logger=lambda *_: None,
+        )
+        assert trainer.uses_auxiliary_head
+
+        skeletons = torch.randn(4, 3, 8, NUM_JOINTS)
+        labels = torch.arange(4) % NUM_CLASSES
+        criterion = torch.nn.CrossEntropyLoss()
+        with torch.no_grad():
+            main_logits, auxiliary_logits = model.forward_with_auxiliary(skeletons)
+            expected = criterion(main_logits, labels) + 0.5 * criterion(
+                auxiliary_logits, labels
+            )
+            loss = trainer.compute_loss(skeletons, labels)
+        assert float(loss) == pytest.approx(float(expected))
+
+    def test_zero_auxiliary_weight_falls_back_to_the_prediction_head(self):
+        torch.manual_seed(0)
+        model = DualHeadModel()
+        trainer = Trainer(
+            model,
+            num_classes=NUM_CLASSES,
+            config=TrainingConfig(auxiliary_loss_weight=0.0, log_interval=0),
+            device=torch.device("cpu"),
+            logger=lambda *_: None,
+        )
+        assert not trainer.uses_auxiliary_head
+
+        skeletons = torch.randn(4, 3, 8, NUM_JOINTS)
+        labels = torch.arange(4) % NUM_CLASSES
+        with torch.no_grad():
+            expected = torch.nn.CrossEntropyLoss()(model(skeletons), labels)
+            loss = trainer.compute_loss(skeletons, labels)
+        assert float(loss) == pytest.approx(float(expected))
+
+    def test_dual_head_training_updates_both_branches(self, loader):
+        torch.manual_seed(0)
+        model = DualHeadModel()
+        before = {
+            name: parameter.detach().clone() for name, parameter in model.named_parameters()
+        }
+        trainer = Trainer(
+            model,
+            num_classes=NUM_CLASSES,
+            config=TrainingConfig(epochs=1, log_interval=0),
+            device=torch.device("cpu"),
+            logger=lambda *_: None,
+        )
+        trainer.fit(loader)
+        for name, parameter in model.named_parameters():
+            assert not torch.allclose(before[name], parameter), f"{name} did not move"
 
     def test_load_best_requires_validation(self, loader):
         trainer = Trainer(

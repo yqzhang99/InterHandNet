@@ -22,7 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deploy.jetson.runtime import TensorRTPredictor  # noqa: E402
-from interhandnet.data.dataset import WHO_STEP_NAMES  # noqa: E402
+from interhandnet.data.dataset import class_names  # noqa: E402
 from interhandnet.data.skeleton_extraction import MediaPipeHandSkeletonExtractor  # noqa: E402
 from interhandnet.data.transforms import to_model_layout  # noqa: E402
 
@@ -84,9 +84,7 @@ def main() -> None:
 
                     step = int(probabilities.argmax())
                     last_confidence = float(probabilities[step])
-                    last_label = (
-                        WHO_STEP_NAMES[step] if step < len(WHO_STEP_NAMES) else f"class {step}"
-                    )
+                    last_label = class_names(len(probabilities))[step]
                     print(f"{last_label}  p={last_confidence:.2f}  ({latency_ms:.1f} ms)")
                     frames.clear()
 

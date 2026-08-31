@@ -12,6 +12,26 @@ from interhandnet.utils import apply_overrides, load_config, merge_dicts, save_c
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 EXPERIMENT_CONFIGS = sorted(path for path in CONFIG_DIR.glob("*.yaml") if path.name != "base.yaml")
 
+# Per-backbone overrides that shrink a shipped config to a test-sized network.
+SHRINK = {
+    "interhandnet": {
+        "block_channels": [8, 8],
+        "block_strides": [1, 2],
+        "interaction_graph_blocks": [0],
+        "temporal_kernel_sizes": [3],
+        "num_heads": 2,
+    },
+    "interhandnet_sta_gcn": {
+        "feature_channels": [8, 8],
+        "feature_strides": [1, 1],
+        "branch_channels": [16],
+        "branch_strides": [2],
+        "interaction_graph_blocks": [1],
+        "temporal_kernel_sizes": [3],
+        "num_heads": 2,
+    },
+}
+
 
 class TestMerge:
     def test_nested_dicts_are_merged_recursively(self):
@@ -75,26 +95,19 @@ class TestShippedConfigs:
         config = load_config(path)
         for section in ("data", "model", "training", "cross_validation"):
             assert section in config, f"{path.name} is missing the {section!r} section"
-        assert config["model"]["num_classes"] == 6
+        # 7 classes: "other" plus the six WHO steps, as labelled in the dataset.
+        assert config["model"]["num_classes"] == 7
         assert config["data"]["window_size"] == 30
 
     @pytest.mark.parametrize("path", EXPERIMENT_CONFIGS, ids=lambda p: p.stem)
     def test_model_builds_and_runs(self, path):
         config = load_config(path)
         # Shrink the network so the forward pass stays cheap in tests.
-        config["model"].update(
-            {
-                "block_channels": [8, 8],
-                "block_strides": [1, 2],
-                "interaction_graph_blocks": [0],
-                "temporal_kernel_sizes": [3],
-                "num_heads": 2,
-            }
-        )
+        config["model"].update(SHRINK[config["model"].get("name", "interhandnet")])
         model = build_model(config["model"]).eval()
         with torch.no_grad():
             logits = model(torch.randn(1, 3, config["data"]["window_size"], NUM_JOINTS))
-        assert logits.shape == (1, 6)
+        assert logits.shape == (1, config["model"]["num_classes"])
 
     def test_paper_hyperparameters_in_base(self):
         config = load_config(CONFIG_DIR / "base.yaml")
@@ -105,13 +118,24 @@ class TestShippedConfigs:
         assert training["weight_decay"] == pytest.approx(0.0005)
         assert config["cross_validation"]["num_folds"] == 5
 
-    def test_ablation_flags_are_distinct(self):
-        flags = {}
+    def test_experiment_configs_are_distinct(self):
+        """No two shipped configs may describe the same experiment. The backbone
+        is part of the identity, since the same module flags are used with both."""
+        signatures = {}
         for path in EXPERIMENT_CONFIGS:
             model = load_config(path)["model"]
-            flags[path.stem] = (
+            signatures[path.stem] = (
+                model.get("name", "interhandnet"),
                 model["use_interaction_graph"],
                 model["use_interaction_attention"],
                 model["use_interhand_temporal_fusion"],
+                model.get("residual", True),
+                model.get("interaction_graph_self_loops", False),
             )
-        assert len(set(flags.values())) == len(flags), f"duplicate ablation configs: {flags}"
+        duplicates = len(signatures) - len(set(signatures.values()))
+        assert not duplicates, f"duplicate experiment configs: {signatures}"
+
+    def test_every_config_names_a_known_model(self):
+        for path in EXPERIMENT_CONFIGS:
+            name = load_config(path)["model"].get("name", "interhandnet")
+            assert name in SHRINK, f"{path.name} uses unknown model {name!r}"

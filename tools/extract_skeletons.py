@@ -6,11 +6,13 @@ The archive layout is documented in
 
 Labels and camera settings are taken from the file paths. The default pattern
 matches the layout of the dataset by Lulla et al., where each video lives in a
-per-camera directory and its WHO step is encoded in the file name:
+per-camera directory and its movement code is encoded in the file name:
 
-    <root>/<camera>/<something>_<step>.mp4
+    <root>/<camera>/<something>_<code>.mp4
 
-Adjust ``--label-regex`` and ``--camera-regex`` for a different naming scheme.
+The movement code is used as the class index directly: ``0`` is "other movement"
+and ``1..6`` are the six WHO steps. Adjust ``--label-regex``,
+``--camera-regex`` and ``--label-offset`` for a different naming scheme.
 
 Example:
     python tools/extract_skeletons.py --videos data/raw --output data/handwashing_mediapipe.npz
@@ -54,8 +56,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--label-offset",
         type=int,
-        default=1,
-        help="value subtracted from the parsed label to make it 0-based",
+        default=0,
+        help=(
+            "value subtracted from the parsed label; the default of 0 keeps the "
+            "dataset's movement codes (0 = other, 1..6 = WHO steps) as class "
+            "indices. Use 1 if your file names encode 1-based steps only."
+        ),
     )
     parser.add_argument(
         "--image-landmarks",
@@ -127,7 +133,7 @@ def main() -> None:
             global_offset += len(sequence)
             print(
                 f"[{index}/{len(videos)}] {relative}: {len(sequence)} frames -> "
-                f"{len(video_windows)} windows (step {label + args.label_offset}, camera {camera})"
+                f"{len(video_windows)} windows (class {label}, camera {camera})"
             )
 
     if not windows:

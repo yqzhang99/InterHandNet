@@ -17,7 +17,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from interhandnet.apis import build_dataset, build_loader, load_checkpoint, resolve_device  # noqa: E402
-from interhandnet.data.dataset import WHO_STEP_NAMES  # noqa: E402
+from interhandnet.data.dataset import class_names  # noqa: E402
 from interhandnet.data.splits import group_indices_by_camera, temporal_kfold  # noqa: E402
 from interhandnet.engine import evaluate  # noqa: E402
 from interhandnet.utils import apply_overrides, load_config  # noqa: E402
@@ -85,10 +85,10 @@ def main() -> None:
     metrics = evaluate(model, loader, config["model"]["num_classes"], device=device)
 
     print(metrics.format_summary())
-    print("\nper-step F1")
+    print("\nper-class F1")
+    names = class_names(config["model"]["num_classes"])
     for index, score in enumerate(metrics.per_class_f1):
-        name = WHO_STEP_NAMES[index] if index < len(WHO_STEP_NAMES) else f"class {index}"
-        print(f"  {name:<48s} {score:.4f}")
+        print(f"  {names[index]:<48s} {score:.4f}")
     print("\nconfusion matrix (rows: ground truth, columns: prediction)")
     print(format_confusion_matrix(metrics.confusion_matrix))
 

@@ -1,4 +1,7 @@
-# Shared settings. Concrete experiments inherit from this file with `_base_`.
+# Settings shared by every backbone. Concrete experiments inherit from this file
+# with `_base_`. The block layout is *not* here: it differs between the two
+# backbones, so it lives in `interhandnet.yaml` (ST-GCN) and
+# `interhandnet_sta_gcn.yaml` (STA-GCN), which the other configs inherit from.
 seed: 1
 deterministic: false
 work_dir: work_dirs/base
@@ -13,16 +16,12 @@ data:
   num_workers: 4
 
 model:
-  name: interhandnet
-  num_classes: 6
+  # Label set of the Lulla et al. dataset: 0 = other movement, 1..6 = WHO steps.
+  # Use 6 to classify the WHO steps alone.
+  num_classes: 7
   in_channels: 3
-  block_channels: [32, 32, 32, 64, 64, 64]
-  block_strides: [1, 1, 1, 2, 1, 1]
-  # The Interaction Graph is applied to the blocks that run at full temporal
-  # resolution, so the distance matrix D stays aligned with the features.
-  interaction_graph_blocks: [0, 1, 2]
-  max_hop: 1
-  temporal_kernel_sizes: [9, 5]
+  max_hop: 2
+  temporal_kernel_sizes: [5, 15]
   num_heads: 4
   dropout: 0.5
   attention_dropout: 0.1
@@ -31,6 +30,11 @@ model:
   use_interaction_attention: true
   interaction_graph_self_loops: false
   distance_fusion: matmul
+  # `spatial` attends within each frame (original research code, cheap enough
+  # for the Jetson latency budget); `spatiotemporal` attends over all
+  # (frame, joint) tokens, which is the literal reading of Eq. (6)/(7).
+  attention_scope: spatial
+  residual: true
 
 # Implementation details of Section IV-C.
 training:

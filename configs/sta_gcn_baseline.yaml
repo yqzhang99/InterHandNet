@@ -1,0 +1,12 @@
+# STA-GCN baseline: the backbone with all three proposed modules disabled.
+# This is the `STA-GCN [22]` row of Table II and Table III.
+_base_: interhandnet_sta_gcn.yaml
+
+work_dir: work_dirs/sta_gcn_baseline
+
+model:
+  use_interaction_graph: false
+  use_interaction_attention: false
+  use_interhand_temporal_fusion: false
+  # The original STA-GCN uses a single temporal convolution per block.
+  temporal_kernel_sizes: [5]

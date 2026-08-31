@@ -1,6 +1,6 @@
 # Ablation `+IG/IA` of Table III and Table IV: both interaction modules, without
 # InterHand Temporal Fusion.
-_base_: base.yaml
+_base_: interhandnet.yaml
 
 work_dir: work_dirs/ablation_ig_ia
 
