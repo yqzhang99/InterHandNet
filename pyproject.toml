@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interhandnet"
+version = "1.0.0"
+description = "InterHandNet: Capturing Two-hand Interaction for Robust Hand-washing Activity Recognition (PerCom 2025)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Yiqing Zhang", email = "zhang.yiqing@ist.osaka-u.ac.jp" },
+    { name = "Takuya Maekawa", email = "maekawa@ist.osaka-u.ac.jp" },
+]
+keywords = [
+    "hand-washing activity recognition",
+    "hand skeleton",
+    "graph convolutional network",
+    "two-hand interaction",
+    "RGB-D camera",
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=1.12",
+    "numpy>=1.21",
+    "PyYAML>=6.0",
+    "tqdm>=4.62",
+]
+
+[project.optional-dependencies]
+extraction = ["mediapipe>=0.10.0", "opencv-python>=4.5"]
+onnx = ["onnx>=1.12", "onnxruntime>=1.12"]
+dev = ["pytest>=7.0", "ruff>=0.1.0"]
+
+[project.urls]
+Repository = "https://github.com/yqzhang99/InterHandNet"
+Paper = "https://doi.org/10.1109/PerCom64205.2025.00021"
+
+[tool.setuptools.packages.find]
+include = ["interhandnet*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

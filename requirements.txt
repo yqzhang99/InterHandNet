@@ -1,0 +1,17 @@
+# Core dependencies for training and evaluating InterHandNet.
+torch>=1.12
+numpy>=1.21
+PyYAML>=6.0
+tqdm>=4.62
+
+# Optional: skeleton extraction from RGB-D video (tools/extract_skeletons.py)
+# mediapipe>=0.10.0
+# opencv-python>=4.5
+
+# Optional: ONNX export and checking (tools/export_onnx.py)
+# onnx>=1.12
+# onnxruntime>=1.12
+
+# Optional: edge deployment on NVIDIA Jetson (deploy/tensorrt)
+# TensorRT and pycuda ship with JetPack; install them through the JetPack SDK
+# rather than pip.

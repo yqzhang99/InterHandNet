@@ -1,0 +1,53 @@
+# Shared settings. Concrete experiments inherit from this file with `_base_`.
+seed: 1
+deterministic: false
+work_dir: work_dirs/base
+
+data:
+  # Archive produced by tools/extract_skeletons.py
+  archive: data/handwashing_mediapipe.npz
+  # One second of a 30 fps camera, matching Section IV-A.
+  window_size: 30
+  center: false
+  batch_size: 64
+  num_workers: 4
+
+model:
+  name: interhandnet
+  num_classes: 6
+  in_channels: 3
+  block_channels: [32, 32, 32, 64, 64, 64]
+  block_strides: [1, 1, 1, 2, 1, 1]
+  # The Interaction Graph is applied to the blocks that run at full temporal
+  # resolution, so the distance matrix D stays aligned with the features.
+  interaction_graph_blocks: [0, 1, 2]
+  max_hop: 1
+  temporal_kernel_sizes: [9, 5]
+  num_heads: 4
+  dropout: 0.5
+  attention_dropout: 0.1
+  use_interaction_graph: true
+  use_interhand_temporal_fusion: true
+  use_interaction_attention: true
+  interaction_graph_self_loops: false
+  distance_fusion: matmul
+
+# Implementation details of Section IV-C.
+training:
+  epochs: 50
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0005
+  nesterov: false
+  grad_clip: null
+  lr_steps: []
+  lr_gamma: 0.1
+  best_metric: f1
+  log_interval: 50
+
+# Evaluation methodology of Section IV-B: 5-fold cross-validation per camera
+# setting, split on temporal order. `gap` drops windows next to the validation
+# block so that training data never sits immediately beside it.
+cross_validation:
+  num_folds: 5
+  gap: 1
